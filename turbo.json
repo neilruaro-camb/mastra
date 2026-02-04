@@ -1,5 +1,6 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  "globalEnv": ["GITHUB_REF_NAME"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
@@ -16,6 +17,9 @@
       "dependsOn": ["^build"],
       "cache": false,
       "persistent": true
+    },
+    "validate:package": {
+      "dependsOn": []
     }
   }
 }

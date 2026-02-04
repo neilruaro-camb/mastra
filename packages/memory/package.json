@@ -1,6 +1,6 @@
 {
   "name": "@mastra/memory",
-  "version": "1.0.0-beta.10",
+  "version": "1.1.0",
   "description": "",
   "type": "module",
   "main": "./dist/index.js",
@@ -18,6 +18,16 @@
       "require": {
         "types": "./dist/index.d.ts",
         "default": "./dist/index.cjs"
+      }
+    },
+    "./processors": {
+      "import": {
+        "types": "./dist/processors/index.d.ts",
+        "default": "./dist/processors/index.js"
+      },
+      "require": {
+        "types": "./dist/processors/index.d.ts",
+        "default": "./dist/processors/index.cjs"
       }
     },
     "./package.json": "./package.json"
@@ -38,7 +48,7 @@
   "dependencies": {
     "@mastra/schema-compat": "workspace:*",
     "async-mutex": "^0.5.0",
-    "js-tiktoken": "^1.0.20",
+    "js-tiktoken": "^1.0.21",
     "json-schema": "^0.4.0",
     "lru-cache": "^11.2.2",
     "xxhash-wasm": "^1.1.0"
@@ -54,11 +64,11 @@
     "@mastra/core": "workspace:*",
     "@types/json-schema": "^7.0.15",
     "@types/lru-cache": "^7.10.10",
-    "@types/node": "22.13.17",
+    "@types/node": "22.19.7",
     "@vitest/coverage-v8": "catalog:",
     "@vitest/ui": "catalog:",
     "eslint": "^9.37.0",
-    "tsup": "^8.5.0",
+    "tsup": "^8.5.1",
     "typescript": "catalog:",
     "typescript-eslint": "^8.51.0",
     "vitest": "catalog:"

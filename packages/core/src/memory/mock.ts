@@ -7,8 +7,8 @@ import { ErrorCategory, ErrorDomain, MastraError } from '../error';
 import type {
   MemoryStorage,
   StorageListMessagesInput,
-  StorageListThreadsByResourceIdInput,
-  StorageListThreadsByResourceIdOutput,
+  StorageListThreadsInput,
+  StorageListThreadsOutput,
   StorageCloneThreadInput,
   StorageCloneThreadOutput,
 } from '../storage';
@@ -84,26 +84,18 @@ export class MockMemory extends MastraMemory {
     return memoryStorage.saveMessages({ messages });
   }
 
-  async listThreadsByResourceId(
-    args: StorageListThreadsByResourceIdInput,
-  ): Promise<StorageListThreadsByResourceIdOutput> {
+  async listThreads(args: StorageListThreadsInput): Promise<StorageListThreadsOutput> {
     const memoryStorage = await this.getMemoryStore();
-    return memoryStorage.listThreadsByResourceId(args);
+    return memoryStorage.listThreads(args);
   }
 
   async recall(args: StorageListMessagesInput & { threadConfig?: MemoryConfig; vectorSearchString?: string }): Promise<{
     messages: MastraDBMessage[];
   }> {
     const memoryStorage = await this.getMemoryStore();
-    const result = await memoryStorage.listMessages({
-      threadId: args.threadId,
-      resourceId: args.resourceId,
-      perPage: args.perPage,
-      page: args.page,
-      orderBy: args.orderBy,
-      filter: args.filter,
-      include: args.include,
-    });
+    // Extract only the StorageListMessagesInput properties, excluding threadConfig and vectorSearchString
+    const { threadConfig: _threadConfig, vectorSearchString: _vectorSearchString, ...listMessagesArgs } = args;
+    const result = await memoryStorage.listMessages(listMessagesArgs);
 
     return result;
   }

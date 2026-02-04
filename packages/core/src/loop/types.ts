@@ -26,7 +26,6 @@ import type {
   ProcessorState,
 } from '../processors';
 import type { RequestContext } from '../request-context';
-import type { OutputSchema } from '../stream/base/schema';
 import type {
   ChunkType,
   MastraOnFinishCallback,
@@ -66,7 +65,7 @@ export type PrepareStepFunction = (
   args: ProcessInputStepArgs,
 ) => Promise<ProcessInputStepResult | undefined | void> | ProcessInputStepResult | undefined | void;
 
-export type LoopConfig<OUTPUT extends OutputSchema = undefined> = {
+export type LoopConfig<OUTPUT = undefined> = {
   onChunk?: (chunk: ChunkType<OUTPUT>) => Promise<void> | void;
   onError?: ({ error }: { error: Error | string }) => Promise<void> | void;
   onFinish?: MastraOnFinishCallback<OUTPUT>;
@@ -77,7 +76,7 @@ export type LoopConfig<OUTPUT extends OutputSchema = undefined> = {
   prepareStep?: PrepareStepFunction;
 };
 
-export type LoopOptions<TOOLS extends ToolSet = ToolSet, OUTPUT extends OutputSchema | undefined = undefined> = {
+export type LoopOptions<TOOLS extends ToolSet = ToolSet, OUTPUT = undefined> = {
   mastra?: Mastra;
   resumeContext?: {
     resumeData: any;
@@ -122,12 +121,15 @@ export type LoopOptions<TOOLS extends ToolSet = ToolSet, OUTPUT extends OutputSc
    * If not set, no retries are performed.
    */
   maxProcessorRetries?: number;
+  /**
+   * Shared processor state that persists across loop iterations.
+   * Used by all processor methods (input and output) to share state.
+   * Keyed by processor ID.
+   */
+  processorStates?: Map<string, ProcessorState>;
 };
 
-export type LoopRun<Tools extends ToolSet = ToolSet, OUTPUT extends OutputSchema = undefined> = LoopOptions<
-  Tools,
-  OUTPUT
-> & {
+export type LoopRun<Tools extends ToolSet = ToolSet, OUTPUT = undefined> = LoopOptions<Tools, OUTPUT> & {
   messageId: string;
   runId: string;
   startTimestamp: number;
@@ -137,10 +139,9 @@ export type LoopRun<Tools extends ToolSet = ToolSet, OUTPUT extends OutputSchema
     deserialize: (state: any) => void;
   };
   methodType: ModelMethodType;
-  processorStates?: Map<string, ProcessorState<OUTPUT>>;
 };
 
-export type OuterLLMRun<Tools extends ToolSet = ToolSet, OUTPUT extends OutputSchema = undefined> = {
+export type OuterLLMRun<Tools extends ToolSet = ToolSet, OUTPUT = undefined> = {
   messageId: string;
   controller: ReadableStreamDefaultController<ChunkType<OUTPUT>>;
   outputWriter: OutputWriter;

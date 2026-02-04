@@ -3,7 +3,7 @@ import { createSampleMessageV2 } from './data';
 import { resetRole, createSampleThread } from './data';
 import type { MastraStorage, MemoryStorage } from '@mastra/core/storage';
 import type { MastraDBMessage, StorageThreadType } from '@mastra/core/memory';
-import { MessageList } from '@mastra/core/agent';
+import { MessageList, TypeDetector } from '@mastra/core/agent';
 
 export function createListMessagesTest({ storage }: { storage: MastraStorage }) {
   let memoryStorage: MemoryStorage;
@@ -533,11 +533,13 @@ export function createListMessagesTest({ storage }: { storage: MastraStorage }) 
       expect(retrievedMessages.find(m => m.id === baseMessage.id)?.content.content).toBe('Updated');
     });
 
-    it('should throw error if threadId is an empty string or whitespace only', async () => {
+    it('should throw error if threadId is invalid', async () => {
+      // Empty threadId should throw
       await expect(memoryStorage.listMessages({ threadId: '' })).rejects.toThrow(
         'threadId must be a non-empty string or array of non-empty strings',
       );
 
+      // Whitespace-only threadId should throw
       await expect(memoryStorage.listMessages({ threadId: '   ' })).rejects.toThrow(
         'threadId must be a non-empty string or array of non-empty strings',
       );
@@ -1040,7 +1042,7 @@ export function createListMessagesTest({ storage }: { storage: MastraStorage }) 
       });
 
       expect(messages.length).toBeGreaterThan(0);
-      expect(messages.every(MessageList.isMastraDBMessage)).toBe(true);
+      expect(messages.every(TypeDetector.isMastraDBMessage)).toBe(true);
     });
 
     it('should return messages in MastraDBMessage format', async () => {
@@ -1049,7 +1051,7 @@ export function createListMessagesTest({ storage }: { storage: MastraStorage }) 
       });
 
       expect(v2messages.length).toBeGreaterThan(0);
-      expect(v2messages.every(MessageList.isMastraDBMessage)).toBe(true);
+      expect(v2messages.every(TypeDetector.isMastraDBMessage)).toBe(true);
     });
 
     it('should return messages from multiple threads', async () => {

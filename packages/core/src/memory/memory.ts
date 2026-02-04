@@ -3,7 +3,7 @@ import type { MastraDBMessage } from '../agent/message-list';
 import { MastraBase } from '../base';
 import { ErrorDomain, MastraError } from '../error';
 import { ModelRouterEmbeddingModel } from '../llm/model';
-import type { EmbeddingModelId } from '../llm/model';
+import type { EmbeddingModelId, ModelRouterModelId } from '../llm/model';
 import type { Mastra } from '../mastra';
 import type {
   InputProcessor,
@@ -15,15 +15,16 @@ import { isProcessorWorkflow } from '../processors';
 import { MessageHistory, WorkingMemory, SemanticRecall } from '../processors/memory';
 import type { RequestContext } from '../request-context';
 import type {
-  MastraStorage,
+  MastraCompositeStore,
   StorageListMessagesInput,
-  StorageListThreadsByResourceIdInput,
-  StorageListThreadsByResourceIdOutput,
+  StorageListThreadsInput,
+  StorageListThreadsOutput,
   StorageCloneThreadInput,
   StorageCloneThreadOutput,
 } from '../storage';
 import { augmentWithInit } from '../storage/storageWithInit';
 import type { ToolAction } from '../tools';
+import type { IdGeneratorContext } from '../types';
 import { deepMerge } from '../utils';
 import type { MastraEmbeddingModel, MastraEmbeddingOptions, MastraVector } from '../vector';
 
@@ -35,7 +36,9 @@ import type {
   WorkingMemoryTemplate,
   MessageDeleteInput,
   MemoryRequestContext,
+  SerializedMemoryConfig,
 } from './types';
+import { isObservationalMemoryEnabled } from './types';
 
 export type MemoryProcessorOpts = {
   systemMessage?: string;
@@ -96,7 +99,7 @@ export abstract class MastraMemory extends MastraBase {
 
   MAX_CONTEXT_TOKENS?: number;
 
-  protected _storage?: MastraStorage;
+  protected _storage?: MastraCompositeStore;
   vector?: MastraVector;
   embedder?: MastraEmbeddingModel<string>;
   embedderOptions?: MastraEmbeddingOptions;
@@ -200,7 +203,7 @@ https://mastra.ai/en/docs/memory/overview`,
     return this._storage;
   }
 
-  public setStorage(storage: MastraStorage) {
+  public setStorage(storage: MastraCompositeStore) {
     this._storage = augmentWithInit(storage);
   }
 
@@ -240,7 +243,7 @@ https://mastra.ai/en/docs/memory/overview`,
    * This will be called when converting tools for the agent.
    * Implementations can override this to provide additional tools.
    */
-  public listTools(_config?: MemoryConfig): Record<string, ToolAction<any, any, any>> {
+  public listTools(_config?: MemoryConfig): Record<string, ToolAction<any, any, any, any, any>> {
     return {};
   }
 
@@ -325,19 +328,38 @@ https://mastra.ai/en/docs/memory/overview`,
   abstract getThreadById({ threadId }: { threadId: string }): Promise<StorageThreadType | null>;
 
   /**
-   * Lists all threads that belong to the specified resource.
-   * @param args.resourceId - The unique identifier of the resource
-   * @param args.offset - The number of threads to skip (for pagination)
-   * @param args.limit - The maximum number of threads to return
-   * @param args.orderBy - Optional sorting configuration with `field` (`'createdAt'` or `'updatedAt'`)
-   *                       and `direction` (`'ASC'` or `'DESC'`);
-   *                       defaults to `{ field: 'createdAt', direction: 'DESC' }`
-   * @returns Promise resolving to paginated thread results with metadata;
-   *          resolves to an empty array if the resource has no threads
+   * Lists threads with optional filtering by resourceId and metadata.
+   * This method supports:
+   * - Optional resourceId filtering (not required)
+   * - Metadata filtering with AND logic (all key-value pairs must match)
+   * - Pagination via `page` / `perPage`, optional ordering via `orderBy`
+   *
+   * @param args.filter - Optional filters for resourceId and/or metadata
+   * @param args.filter.resourceId - Optional resource ID to filter by
+   * @param args.filter.metadata - Optional metadata key-value pairs to filter by (AND logic)
+   * @param args.page - Zero-indexed page number for pagination (defaults to 0)
+   * @param args.perPage - Number of items per page, or false to fetch all (defaults to 100)
+   * @param args.orderBy - Optional sorting configuration with `field` and `direction`
+   * @returns Promise resolving to paginated thread results with metadata
+   *
+   * @example
+   * ```typescript
+   * // Filter by resourceId only
+   * await memory.listThreads({ filter: { resourceId: 'user-123' } });
+   *
+   * // Filter by metadata only
+   * await memory.listThreads({ filter: { metadata: { category: 'support' } } });
+   *
+   * // Filter by both
+   * await memory.listThreads({
+   *   filter: {
+   *     resourceId: 'user-123',
+   *     metadata: { priority: 'high', status: 'open' }
+   *   }
+   * });
+   * ```
    */
-  abstract listThreadsByResourceId(
-    args: StorageListThreadsByResourceIdInput,
-  ): Promise<StorageListThreadsByResourceIdOutput>;
+  abstract listThreads(args: StorageListThreadsInput): Promise<StorageListThreadsOutput>;
 
   /**
    * Saves or updates a thread
@@ -360,7 +382,7 @@ https://mastra.ai/en/docs/memory/overview`,
   abstract saveMessages(args: {
     messages: MastraDBMessage[];
     memoryConfig?: MemoryConfig | undefined;
-  }): Promise<{ messages: MastraDBMessage[] }>;
+  }): Promise<{ messages: MastraDBMessage[]; usage?: { tokens: number } }>;
 
   /**
    * Retrieves messages for a specific thread with optional semantic recall
@@ -375,7 +397,7 @@ https://mastra.ai/en/docs/memory/overview`,
       threadConfig?: MemoryConfig;
       vectorSearchString?: string;
     },
-  ): Promise<{ messages: MastraDBMessage[] }>;
+  ): Promise<{ messages: MastraDBMessage[]; usage?: { tokens: number } }>;
 
   /**
    * Helper method to create a new thread
@@ -399,7 +421,13 @@ https://mastra.ai/en/docs/memory/overview`,
     saveThread?: boolean;
   }): Promise<StorageThreadType> {
     const thread: StorageThreadType = {
-      id: threadId || this.generateId(),
+      id:
+        threadId ||
+        this.generateId({
+          idType: 'thread',
+          source: 'memory',
+          resourceId,
+        }),
       title: title || `New Thread ${new Date().toISOString()}`,
       resourceId,
       createdAt: new Date(),
@@ -444,10 +472,11 @@ https://mastra.ai/en/docs/memory/overview`,
 
   /**
    * Generates a unique identifier
+   * @param context - Optional context information for deterministic ID generation
    * @returns A unique string ID
    */
-  public generateId(): string {
-    return this.#mastra?.generateId() || crypto.randomUUID();
+  public generateId(context?: IdGeneratorContext): string {
+    return this.#mastra?.generateId(context) || crypto.randomUUID();
   }
 
   /**
@@ -580,7 +609,13 @@ https://mastra.ai/en/docs/memory/overview`,
       // Check if user already manually added MessageHistory
       const hasMessageHistory = configuredProcessors.some(p => !isProcessorWorkflow(p) && p.id === 'message-history');
 
-      if (!hasMessageHistory) {
+      // Check if ObservationalMemory is present (via processor or config) - it handles its own message loading and saving
+      const hasObservationalMemory =
+        configuredProcessors.some(p => !isProcessorWorkflow(p) && p.id === 'observational-memory') ||
+        isObservationalMemoryEnabled(effectiveConfig.observationalMemory);
+
+      // Skip MessageHistory input processor if ObservationalMemory handles message loading
+      if (!hasMessageHistory && !hasObservationalMemory) {
         processors.push(
           new MessageHistory({
             storage: memoryStore,
@@ -648,6 +683,12 @@ https://mastra.ai/en/docs/memory/overview`,
    * This allows Memory to be used as a ProcessorProvider in Agent's outputProcessors array.
    * @param configuredProcessors - Processors already configured by the user (for deduplication)
    * @returns Array of output processors configured for this memory instance
+   *
+   * Note: We intentionally do NOT check readOnly here. The readOnly check happens at execution time
+   * in each processor's processOutputResult method. This allows proper isolation when agents share
+   * a RequestContext - each agent's readOnly setting is respected when its processors actually run,
+   * not when processors are resolved (which may happen before the agent sets its MastraMemory context).
+   * See: https://github.com/mastra-ai/mastra/issues/11651
    */
   async getOutputProcessors(
     configuredProcessors: OutputProcessorOrWorkflow[] = [],
@@ -660,10 +701,6 @@ https://mastra.ai/en/docs/memory/overview`,
     const memoryContext = context?.get('MastraMemory') as MemoryRequestContext | undefined;
     const runtimeMemoryConfig = memoryContext?.memoryConfig;
     const effectiveConfig = runtimeMemoryConfig ? this.getMergedThreadConfig(runtimeMemoryConfig) : this.threadConfig;
-
-    if (effectiveConfig.readOnly) {
-      return [];
-    }
 
     // Add SemanticRecall output processor if configured
     if (effectiveConfig.semanticRecall) {
@@ -727,7 +764,13 @@ https://mastra.ai/en/docs/memory/overview`,
       // Check if user already manually added MessageHistory
       const hasMessageHistory = configuredProcessors.some(p => !isProcessorWorkflow(p) && p.id === 'message-history');
 
-      if (!hasMessageHistory) {
+      // Check if ObservationalMemory is present (via processor or config) - it handles its own message saving
+      const hasObservationalMemory =
+        configuredProcessors.some(p => !isProcessorWorkflow(p) && p.id === 'observational-memory') ||
+        isObservationalMemoryEnabled(effectiveConfig.observationalMemory);
+
+      // Skip MessageHistory output processor if ObservationalMemory handles message saving
+      if (!hasMessageHistory && !hasObservationalMemory) {
         processors.push(
           new MessageHistory({
             storage: memoryStore,
@@ -750,4 +793,60 @@ https://mastra.ai/en/docs/memory/overview`,
    * @returns Promise resolving to the cloned thread and copied messages
    */
   abstract cloneThread(args: StorageCloneThreadInput): Promise<StorageCloneThreadOutput>;
+
+  /**
+   * Get serializable configuration for this memory instance
+   * @returns Serializable memory configuration
+   */
+  getConfig(): SerializedMemoryConfig {
+    const { generateTitle, workingMemory, threads, ...restConfig } = this.threadConfig;
+
+    const config: SerializedMemoryConfig = {
+      vector: this.vector?.id,
+      options: {
+        ...restConfig,
+      },
+    };
+
+    // Serialize generateTitle configuration
+    if (generateTitle !== undefined && config.options) {
+      if (typeof generateTitle === 'boolean') {
+        config.options.generateTitle = generateTitle;
+      } else if (typeof generateTitle === 'object' && generateTitle.model) {
+        const model = generateTitle.model;
+        // Extract ModelRouterModelId from various model configurations
+        let modelId: string | undefined;
+
+        if (typeof model === 'string') {
+          modelId = model;
+        } else if (typeof model === 'function') {
+          // Cannot serialize dynamic functions - skip
+          modelId = undefined;
+        } else if (model && typeof model === 'object') {
+          // Handle config objects with id field
+          if ('id' in model && typeof model.id === 'string') {
+            modelId = model.id;
+          }
+        }
+
+        if (modelId && config.options) {
+          config.options.generateTitle = {
+            model: modelId as ModelRouterModelId,
+            instructions: typeof generateTitle.instructions === 'string' ? generateTitle.instructions : undefined,
+          };
+        }
+      }
+    }
+
+    if (this.embedder) {
+      config.embedder = this.embedder as unknown as EmbeddingModelId;
+    }
+
+    if (this.embedderOptions) {
+      const { telemetry, ...rest } = this.embedderOptions;
+      config.embedderOptions = rest;
+    }
+
+    return config;
+  }
 }

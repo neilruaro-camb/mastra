@@ -1,6 +1,13 @@
 import type { ScoreRowData } from '../../evals/types';
 import type { StorageThreadType } from '../../memory/types';
-import type { StorageAgentType, StorageMessageType, StorageResourceType, StorageWorkflowRun } from '../types';
+import type {
+  StorageAgentType,
+  StorageMessageType,
+  StorageResourceType,
+  StorageWorkflowRun,
+  ObservationalMemoryRecord,
+} from '../types';
+import type { AgentVersion } from './agents';
 import type { TraceEntry } from './observability';
 
 /**
@@ -18,6 +25,9 @@ export class InMemoryDB {
   readonly scores = new Map<string, ScoreRowData>();
   readonly traces = new Map<string, TraceEntry>();
   readonly agents = new Map<string, StorageAgentType>();
+  readonly agentVersions = new Map<string, AgentVersion>();
+  /** Observational memory records, keyed by resourceId, each holding array of records (generations) */
+  readonly observationalMemory = new Map<string, ObservationalMemoryRecord[]>();
 
   /**
    * Clears all data from all collections.
@@ -31,5 +41,7 @@ export class InMemoryDB {
     this.scores.clear();
     this.traces.clear();
     this.agents.clear();
+    this.agentVersions.clear();
+    this.observationalMemory.clear();
   }
 }

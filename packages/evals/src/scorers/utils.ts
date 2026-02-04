@@ -1,7 +1,6 @@
 import type { MastraDBMessage } from '@mastra/core/agent';
 import type { ScorerRunInputForAgent, ScorerRunOutputForAgent, ScoringInput } from '@mastra/core/evals';
 import { RequestContext } from '@mastra/core/request-context';
-import type { ToolInvocation } from 'ai';
 
 /**
  * Extracts text content from a MastraDBMessage.
@@ -183,8 +182,8 @@ export const getSystemMessagesFromRunInput = (input?: ScorerRunInputForAgent): s
           } else if (Array.isArray(msg.content)) {
             // Extract text from parts array
             return msg.content
-              .filter(part => part.type === 'text')
-              .map(part => part.text || '')
+              .filter((part: any) => part.type === 'text')
+              .map((part: any) => part.text || '')
               .join(' ');
           }
           return '';
@@ -348,7 +347,7 @@ export const createToolInvocation = ({
   toolName: string;
   args: Record<string, any>;
   result: Record<string, any>;
-  state?: ToolInvocation['state'];
+  state?: 'call' | 'partial-call' | 'result';
 }): { toolCallId: string; toolName: string; args: Record<string, any>; result: Record<string, any>; state: string } => {
   return {
     toolCallId,
@@ -594,3 +593,64 @@ export const extractInputMessages = (runInput: ScorerRunInputForAgent | undefine
 export const extractAgentResponseMessages = (runOutput: ScorerRunOutputForAgent): string[] => {
   return runOutput.filter(msg => msg.role === 'assistant').map(msg => getTextContentFromMastraDBMessage(msg));
 };
+
+/**
+ * Information about a tool result extracted from scorer output.
+ */
+export type ToolResultInfo = {
+  /** Name of the tool that was called */
+  toolName: string;
+  /** Unique identifier for the tool call */
+  toolCallId: string;
+  /** Arguments passed to the tool */
+  args: Record<string, any>;
+  /** Result returned by the tool */
+  result: any;
+};
+
+/**
+ * Extracts tool results from a scorer run output.
+ *
+ * Returns structured objects that can be used with the hallucination scorer's
+ * `getContext` hook or for other scorer logic.
+ *
+ * @param output - The scorer run output (array of MastraDBMessage)
+ * @returns An array of ToolResultInfo objects
+ *
+ * @example
+ * ```ts
+ * import { extractToolResults } from '@mastra/evals/scorers';
+ * import { createHallucinationScorer } from '@mastra/evals/scorers/prebuilt';
+ *
+ * const scorer = createHallucinationScorer({
+ *   model: openai('gpt-4o'),
+ *   options: {
+ *     getContext: (run) => {
+ *       const toolResults = extractToolResults(run.output);
+ *       return toolResults.map(t => JSON.stringify({ tool: t.toolName, result: t.result }));
+ *     },
+ *   },
+ * });
+ * ```
+ */
+export function extractToolResults(output: ScorerRunOutputForAgent): ToolResultInfo[] {
+  const results: ToolResultInfo[] = [];
+
+  for (const message of output) {
+    const toolInvocations = message?.content?.toolInvocations;
+    if (!toolInvocations) continue;
+
+    for (const invocation of toolInvocations) {
+      if (invocation.state === 'result' && invocation.result !== undefined) {
+        results.push({
+          toolName: invocation.toolName,
+          toolCallId: invocation.toolCallId || '',
+          args: invocation.args || {},
+          result: invocation.result,
+        });
+      }
+    }
+  }
+
+  return results;
+}

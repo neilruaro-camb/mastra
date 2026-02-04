@@ -5,16 +5,34 @@ import type {
   ThreadOrderBy,
   ThreadSortDirection,
   StorageListMessagesInput,
+  StorageListMessagesByResourceIdInput,
   StorageListMessagesOutput,
-  StorageListThreadsByResourceIdInput,
-  StorageListThreadsByResourceIdOutput,
+  StorageListThreadsInput,
+  StorageListThreadsOutput,
   StorageOrderBy,
   StorageCloneThreadInput,
   StorageCloneThreadOutput,
+  ObservationalMemoryRecord,
+  CreateObservationalMemoryInput,
+  UpdateActiveObservationsInput,
+  // UpdateBufferedObservationsInput, // Buffering disabled
+  CreateReflectionGenerationInput,
 } from '../../types';
 import { StorageDomain } from '../base';
 
+// Constants for metadata key validation
+const SAFE_METADATA_KEY_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+const MAX_METADATA_KEY_LENGTH = 128;
+const DISALLOWED_METADATA_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+
 export abstract class MemoryStorage extends StorageDomain {
+  /**
+   * Whether this storage adapter supports Observational Memory.
+   * Adapters that implement OM methods should set this to true.
+   * Defaults to false for backwards compatibility with custom adapters.
+   */
+  readonly supportsObservationalMemory?: boolean = false;
+
   constructor() {
     super({
       component: 'STORAGE',
@@ -40,6 +58,20 @@ export abstract class MemoryStorage extends StorageDomain {
 
   abstract listMessages(args: StorageListMessagesInput): Promise<StorageListMessagesOutput>;
 
+  /**
+   * List messages by resource ID only (across all threads).
+   * Used by Observational Memory and LongMemEval for resource-scoped queries.
+   *
+   * @param args - Resource ID and pagination/filtering options
+   * @returns Paginated list of messages for the resource
+   */
+  async listMessagesByResourceId(_args: StorageListMessagesByResourceIdInput): Promise<StorageListMessagesOutput> {
+    throw new Error(
+      `Resource-scoped message listing is not implemented by this storage adapter (${this.constructor.name}). ` +
+        `Use an adapter that supports Observational Memory (pg, libsql, mongodb) or disable observational memory.`,
+    );
+  }
+
   abstract listMessagesById({ messageIds }: { messageIds: string[] }): Promise<{ messages: MastraDBMessage[] }>;
 
   abstract saveMessages(args: { messages: MastraDBMessage[] }): Promise<{ messages: MastraDBMessage[] }>;
@@ -58,9 +90,16 @@ export abstract class MemoryStorage extends StorageDomain {
     );
   }
 
-  abstract listThreadsByResourceId(
-    args: StorageListThreadsByResourceIdInput,
-  ): Promise<StorageListThreadsByResourceIdOutput>;
+  /**
+   * List threads with optional filtering by resourceId and metadata.
+   *
+   * @param args - Filter, pagination, and ordering options
+   * @param args.filter - Optional filters for resourceId and/or metadata
+   * @param args.filter.resourceId - Optional resource ID to filter by
+   * @param args.filter.metadata - Optional metadata key-value pairs to filter by (AND logic)
+   * @returns Paginated list of threads matching the filters
+   */
+  abstract listThreads(args: StorageListThreadsInput): Promise<StorageListThreadsOutput>;
 
   /**
    * Clone a thread and its messages to create a new independent thread.
@@ -115,6 +154,243 @@ export abstract class MemoryStorage extends StorageDomain {
           ? orderBy.direction
           : defaultDirection,
     };
+  }
+
+  // ============================================
+  // Observational Memory Methods
+  // ============================================
+
+  /**
+   * Get the current observational memory record for a thread/resource.
+   * Returns the most recent active record.
+   */
+  async getObservationalMemory(
+    _threadId: string | null,
+    _resourceId: string,
+  ): Promise<ObservationalMemoryRecord | null> {
+    throw new Error(`Observational memory is not implemented by this storage adapter (${this.constructor.name}).`);
+  }
+
+  /**
+   * Get observational memory history (previous generations).
+   * Returns records in reverse chronological order (newest first).
+   */
+  async getObservationalMemoryHistory(
+    _threadId: string | null,
+    _resourceId: string,
+    _limit?: number,
+  ): Promise<ObservationalMemoryRecord[]> {
+    throw new Error(`Observational memory is not implemented by this storage adapter (${this.constructor.name}).`);
+  }
+
+  /**
+   * Create a new observational memory record.
+   * Called when starting observations for a new thread/resource.
+   */
+  async initializeObservationalMemory(_input: CreateObservationalMemoryInput): Promise<ObservationalMemoryRecord> {
+    throw new Error(`Observational memory is not implemented by this storage adapter (${this.constructor.name}).`);
+  }
+
+  /**
+   * Update active observations.
+   * Called when observations are created and immediately activated (no buffering).
+   */
+  async updateActiveObservations(_input: UpdateActiveObservationsInput): Promise<void> {
+    throw new Error(`Observational memory is not implemented by this storage adapter (${this.constructor.name}).`);
+  }
+
+  // ============================================
+  // Buffering Methods (DISABLED - not currently used)
+  // These methods were designed for async observation buffering
+  // which has been disabled. Keeping commented for future reference.
+  // ============================================
+
+  // /**
+  //  * Update buffered observations.
+  //  * Called when observations are created asynchronously.
+  //  */
+  // async updateBufferedObservations(_input: UpdateBufferedObservationsInput): Promise<void> {
+  //   throw new Error(`Observational memory is not implemented by this storage adapter (${this.constructor.name}).`);
+  // }
+
+  // /**
+  //  * Swap buffered observations to active.
+  //  * Atomic operation that:
+  //  * 1. Moves bufferedObservations → activeObservations
+  //  * 2. Moves bufferedMessageIds → observedMessageIds
+  //  * 3. Clears buffered state
+  //  */
+  // async swapBufferedToActive(_id: string): Promise<void> {
+  //   throw new Error(`Observational memory is not implemented by this storage adapter (${this.constructor.name}).`);
+  // }
+
+  // /**
+  //  * Mark messages as currently being observed (in-flight).
+  //  */
+  // async markMessagesAsBuffering(_id: string, _messageIds: string[]): Promise<void> {
+  //   throw new Error(`Observational memory is not implemented by this storage adapter (${this.constructor.name}).`);
+  // }
+
+  // /**
+  //  * Mark messages as buffered (observation complete but not active).
+  //  * Moves messageIds from bufferingMessageIds → bufferedMessageIds.
+  //  */
+  // async markMessagesAsBuffered(_id: string, _messageIds: string[]): Promise<void> {
+  //   throw new Error(`Observational memory is not implemented by this storage adapter (${this.constructor.name}).`);
+  // }
+
+  /**
+   * Create a new generation from a reflection.
+   * Creates a new record with:
+   * - originType: 'reflection'
+   * - activeObservations containing the reflection
+   * - generationCount incremented from the current record
+   */
+  async createReflectionGeneration(_input: CreateReflectionGenerationInput): Promise<ObservationalMemoryRecord> {
+    throw new Error(`Observational memory is not implemented by this storage adapter (${this.constructor.name}).`);
+  }
+
+  // /**
+  //  * Update buffered reflection (async reflection in progress).
+  //  */
+  // async updateBufferedReflection(_id: string, _reflection: string): Promise<void> {
+  //   throw new Error(`Observational memory is not implemented by this storage adapter (${this.constructor.name}).`);
+  // }
+
+  // /**
+  //  * Swap buffered reflection to active observations.
+  //  * Creates a new generation and makes it the active one.
+  //  */
+  // async swapReflectionToActive(_id: string): Promise<ObservationalMemoryRecord> {
+  //   throw new Error(`Observational memory is not implemented by this storage adapter (${this.constructor.name}).`);
+  // }
+
+  /**
+   * Set the isReflecting flag.
+   */
+  async setReflectingFlag(_id: string, _isReflecting: boolean): Promise<void> {
+    throw new Error(`Observational memory is not implemented by this storage adapter (${this.constructor.name}).`);
+  }
+
+  /**
+   * Set the isObserving flag.
+   */
+  async setObservingFlag(_id: string, _isObserving: boolean): Promise<void> {
+    throw new Error(`Observational memory is not implemented by this storage adapter (${this.constructor.name}).`);
+  }
+
+  /**
+   * Clear all observational memory for a thread/resource.
+   * Removes all records and history.
+   */
+  async clearObservationalMemory(_threadId: string | null, _resourceId: string): Promise<void> {
+    throw new Error(`Observational memory is not implemented by this storage adapter (${this.constructor.name}).`);
+  }
+
+  /**
+   * Add to the pending message token count.
+   * Called when messages are processed but observation hasn't triggered yet.
+   * This allows accumulating tokens across multiple sessions.
+   */
+  async addPendingMessageTokens(_id: string, _tokenCount: number): Promise<void> {
+    throw new Error(`Observational memory is not implemented by this storage adapter (${this.constructor.name}).`);
+  }
+
+  /**
+   * Validates metadata keys to prevent SQL injection attacks and prototype pollution.
+   * Keys must start with a letter or underscore, followed by alphanumeric characters or underscores.
+   * @param metadata - The metadata object to validate
+   * @throws Error if any key contains invalid characters or is a disallowed key
+   */
+  protected validateMetadataKeys(metadata: Record<string, unknown> | undefined): void {
+    if (!metadata) return;
+
+    for (const key of Object.keys(metadata)) {
+      // First check for disallowed prototype pollution keys
+      if (DISALLOWED_METADATA_KEYS.has(key)) {
+        throw new Error(`Invalid metadata key: "${key}".`);
+      }
+
+      // Then check pattern
+      if (!SAFE_METADATA_KEY_PATTERN.test(key)) {
+        throw new Error(
+          `Invalid metadata key: "${key}". Keys must start with a letter or underscore and contain only alphanumeric characters and underscores.`,
+        );
+      }
+
+      // Also limit key length to prevent potential issues
+      if (key.length > MAX_METADATA_KEY_LENGTH) {
+        throw new Error(`Metadata key "${key}" exceeds maximum length of ${MAX_METADATA_KEY_LENGTH} characters.`);
+      }
+    }
+  }
+
+  /**
+   * Validates pagination parameters and returns safe offset.
+   * @param page - Page number (0-indexed)
+   * @param perPage - Items per page (0 is allowed and returns empty results)
+   * @throws Error if page is negative, perPage is negative/invalid, or offset would overflow
+   */
+  protected validatePagination(page: number, perPage: number): void {
+    if (!Number.isFinite(page) || !Number.isSafeInteger(page) || page < 0) {
+      throw new Error('page must be >= 0');
+    }
+
+    // perPage: 0 is allowed (returns empty results), negative values are rejected
+    if (!Number.isFinite(perPage) || !Number.isSafeInteger(perPage) || perPage < 0) {
+      throw new Error('perPage must be >= 0');
+    }
+
+    // Skip overflow check when perPage is 0 (no offset needed)
+    if (perPage === 0) {
+      return;
+    }
+
+    // Prevent overflow when calculating offset
+    const offset = page * perPage;
+    if (!Number.isSafeInteger(offset) || offset > Number.MAX_SAFE_INTEGER) {
+      throw new Error('page value too large');
+    }
+  }
+
+  /**
+   * Validates pagination input before normalization.
+   * Use this when accepting raw perPageInput (number | false) from callers.
+   *
+   * When perPage is false (fetch all), page must be 0 since pagination is disabled.
+   * When perPage is a number, delegates to validatePagination for full validation.
+   *
+   * @param page - Page number (0-indexed)
+   * @param perPageInput - Items per page as number, or false to fetch all results
+   * @throws Error if perPageInput is false and page !== 0
+   * @throws Error if perPageInput is invalid (not false or a non-negative safe integer)
+   * @throws Error if page is invalid or offset would overflow
+   */
+  protected validatePaginationInput(page: number, perPageInput: number | false): void {
+    // Validate perPageInput type first
+    if (perPageInput !== false) {
+      if (typeof perPageInput !== 'number' || !Number.isFinite(perPageInput) || !Number.isSafeInteger(perPageInput)) {
+        throw new Error('perPage must be false or a safe integer');
+      }
+      if (perPageInput < 0) {
+        throw new Error('perPage must be >= 0');
+      }
+    }
+
+    // When fetching all (perPage: false), only page 0 is valid
+    if (perPageInput === false) {
+      if (page !== 0) {
+        throw new Error('page must be 0 when perPage is false');
+      }
+      // Still validate page is a valid integer
+      if (!Number.isFinite(page) || !Number.isSafeInteger(page)) {
+        throw new Error('page must be >= 0');
+      }
+      return;
+    }
+
+    // For numeric perPage, delegate to existing validation
+    this.validatePagination(page, perPageInput);
   }
 }
 

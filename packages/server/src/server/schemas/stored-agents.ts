@@ -1,5 +1,7 @@
 import z from 'zod';
 import { paginationInfoSchema, createPagePaginationSchema } from './common';
+import { defaultOptionsSchema } from './default-options';
+import { serializedMemoryConfigSchema } from './memory-config';
 
 // ============================================================================
 // Path Parameter Schemas
@@ -25,10 +27,12 @@ const storageOrderBySchema = z.object({
 });
 
 /**
- * GET /api/storage/agents - List stored agents
+ * GET /stored/agents - List stored agents
  */
 export const listStoredAgentsQuerySchema = createPagePaginationSchema(100).extend({
   orderBy: storageOrderBySchema.optional(),
+  authorId: z.string().optional().describe('Filter agents by author identifier'),
+  metadata: z.record(z.string(), z.unknown()).optional().describe('Filter agents by metadata key-value pairs'),
 });
 
 // ============================================================================
@@ -40,84 +44,160 @@ export const listStoredAgentsQuerySchema = createPagePaginationSchema(100).exten
  */
 const scorerConfigSchema = z.object({
   sampling: z
-    .object({
-      type: z.enum(['ratio', 'count']),
-      rate: z.number().optional(),
-      count: z.number().optional(),
-    })
+    .union([
+      z.object({ type: z.literal('none') }),
+      z.object({ type: z.literal('ratio'), rate: z.number().min(0).max(1) }),
+    ])
     .optional(),
 });
 
 /**
- * Base stored agent schema (shared fields)
+ * Agent snapshot config fields (name, description, instructions, model, tools, etc.)
+ * These live in version snapshots, not on the thin agent record.
  */
-const storedAgentBaseSchema = z.object({
+const snapshotConfigSchema = z.object({
   name: z.string().describe('Name of the agent'),
   description: z.string().optional().describe('Description of the agent'),
   instructions: z.string().describe('System instructions for the agent'),
-  model: z.record(z.string(), z.unknown()).describe('Model configuration (provider, name, etc.)'),
+  model: z
+    .object({
+      provider: z.string().describe('Model provider (e.g., openai, anthropic)'),
+      name: z.string().describe('Model name (e.g., gpt-4o, claude-3-opus)'),
+    })
+    .passthrough()
+    .describe('Model configuration (provider, name, and optional params)'),
   tools: z.array(z.string()).optional().describe('Array of tool keys to resolve from Mastra registry'),
-  defaultOptions: z.record(z.string(), z.unknown()).optional().describe('Default options for generate/stream calls'),
+  defaultOptions: defaultOptionsSchema.optional().describe('Default options for generate/stream calls'),
   workflows: z.array(z.string()).optional().describe('Array of workflow keys to resolve from Mastra registry'),
   agents: z.array(z.string()).optional().describe('Array of agent keys to resolve from Mastra registry'),
-  inputProcessors: z.array(z.record(z.string(), z.unknown())).optional().describe('Input processor configurations'),
-  outputProcessors: z.array(z.record(z.string(), z.unknown())).optional().describe('Output processor configurations'),
-  memory: z.string().optional().describe('Memory key to resolve from Mastra registry'),
+  integrationTools: z
+    .array(z.string())
+    .optional()
+    .describe('Array of specific integration tool IDs (format: provider_toolkitSlug_toolSlug)'),
+  inputProcessors: z.array(z.string()).optional().describe('Array of processor keys to resolve from Mastra registry'),
+  outputProcessors: z.array(z.string()).optional().describe('Array of processor keys to resolve from Mastra registry'),
+  memory: serializedMemoryConfigSchema.optional().describe('Memory configuration object (SerializedMemoryConfig)'),
   scorers: z.record(z.string(), scorerConfigSchema).optional().describe('Scorer keys with optional sampling config'),
+});
+
+/**
+ * Agent metadata fields (authorId, metadata) that live on the thin agent record.
+ */
+const agentMetadataSchema = z.object({
+  authorId: z.string().optional().describe('Author identifier for multi-tenant filtering'),
   metadata: z.record(z.string(), z.unknown()).optional().describe('Additional metadata for the agent'),
 });
 
 /**
- * POST /api/storage/agents - Create stored agent body
+ * POST /stored/agents - Create stored agent body
+ * Flat union of agent-record fields + config fields
  */
-export const createStoredAgentBodySchema = storedAgentBaseSchema.extend({
-  id: z.string().describe('Unique identifier for the agent'),
-});
+export const createStoredAgentBodySchema = z
+  .object({
+    id: z.string().describe('Unique identifier for the agent'),
+    authorId: z.string().optional().describe('Author identifier for multi-tenant filtering'),
+    metadata: z.record(z.string(), z.unknown()).optional().describe('Additional metadata for the agent'),
+  })
+  .merge(snapshotConfigSchema);
 
 /**
- * PATCH /api/storage/agents/:storedAgentId - Update stored agent body
+ * PATCH /stored/agents/:storedAgentId - Update stored agent body
+ * Optional metadata-level fields + optional config fields
  */
-export const updateStoredAgentBodySchema = storedAgentBaseSchema.partial();
+export const updateStoredAgentBodySchema = agentMetadataSchema.partial().merge(snapshotConfigSchema.partial());
 
 // ============================================================================
 // Response Schemas
 // ============================================================================
 
 /**
- * Stored agent object schema (full response)
+ * Stored agent object schema (resolved response: thin record + version config)
+ * Represents StorageResolvedAgentType
  */
-export const storedAgentSchema = storedAgentBaseSchema.extend({
+export const storedAgentSchema = z.object({
+  // Thin agent record fields
   id: z.string(),
-  createdAt: z.date(),
-  updatedAt: z.date(),
+  status: z.string().describe('Agent status: draft or published'),
+  activeVersionId: z.string().optional(),
+  authorId: z.string().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+  createdAt: z.coerce.date(),
+  updatedAt: z.coerce.date(),
+  // Version snapshot config fields (resolved from active version)
+  name: z.string().describe('Name of the agent'),
+  description: z.string().optional().describe('Description of the agent'),
+  instructions: z.string().describe('System instructions for the agent'),
+  model: z
+    .object({
+      provider: z.string().describe('Model provider (e.g., openai, anthropic)'),
+      name: z.string().describe('Model name (e.g., gpt-4o, claude-3-opus)'),
+    })
+    .passthrough()
+    .describe('Model configuration (provider, name, and optional params)'),
+  tools: z.array(z.string()).optional().describe('Array of tool keys to resolve from Mastra registry'),
+  defaultOptions: defaultOptionsSchema.optional().describe('Default options for generate/stream calls'),
+  workflows: z.array(z.string()).optional().describe('Array of workflow keys to resolve from Mastra registry'),
+  agents: z.array(z.string()).optional().describe('Array of agent keys to resolve from Mastra registry'),
+  integrationTools: z
+    .array(z.string())
+    .optional()
+    .describe('Array of specific integration tool IDs (format: provider_toolkitSlug_toolSlug)'),
+  inputProcessors: z.array(z.string()).optional().describe('Array of processor keys to resolve from Mastra registry'),
+  outputProcessors: z.array(z.string()).optional().describe('Array of processor keys to resolve from Mastra registry'),
+  memory: serializedMemoryConfigSchema.optional().describe('Memory configuration object (SerializedMemoryConfig)'),
+  scorers: z.record(z.string(), scorerConfigSchema).optional().describe('Scorer keys with optional sampling config'),
 });
 
 /**
- * Response for GET /api/storage/agents
+ * Response for GET /stored/agents
  */
 export const listStoredAgentsResponseSchema = paginationInfoSchema.extend({
   agents: z.array(storedAgentSchema),
 });
 
 /**
- * Response for GET /api/storage/agents/:storedAgentId
+ * Response for GET /stored/agents/:storedAgentId
  */
 export const getStoredAgentResponseSchema = storedAgentSchema;
 
 /**
- * Response for POST /api/storage/agents
+ * Response for POST /stored/agents
  */
 export const createStoredAgentResponseSchema = storedAgentSchema;
 
 /**
- * Response for PATCH /api/storage/agents/:storedAgentId
+ * Response for PATCH /stored/agents/:storedAgentId
+ *
+ * The response can be either:
+ * 1. A thin agent record (no version) - only has id, status, dates, etc.
+ * 2. A resolved agent (with version) - has all config fields from the version
+ *
+ * We use a union to handle both cases properly.
  */
-export const updateStoredAgentResponseSchema = storedAgentSchema;
+export const updateStoredAgentResponseSchema = z.union([
+  // Thin agent record (no version config)
+  z.object({
+    id: z.string(),
+    status: z.string(),
+    activeVersionId: z.string().optional(),
+    authorId: z.string().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+    createdAt: z.coerce.date(),
+    updatedAt: z.coerce.date(),
+  }),
+  // Resolved agent (thin record + version config)
+  storedAgentSchema,
+]);
 
 /**
- * Response for DELETE /api/storage/agents/:storedAgentId
+ * Response for DELETE /stored/agents/:storedAgentId
  */
 export const deleteStoredAgentResponseSchema = z.object({
   success: z.boolean(),
   message: z.string(),
 });
+
+/**
+ * Exported for use in agent-versions.ts schemas
+ */
+export { snapshotConfigSchema, scorerConfigSchema };
